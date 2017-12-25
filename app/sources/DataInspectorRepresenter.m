@@ -35,6 +35,8 @@ enum InspectorType_t {
     eInspectorTypeUTF8Text,
     eInspectorTypeSLEB128,
     eInspectorTypeULEB128,
+    eInspectorTypeSignedVarint,
+    eInspectorTypeUnsignedVarint,
     eInspectorTypeBinary,
     
     // Total number of inspector types.
@@ -287,6 +289,58 @@ static id unsignedIntegerDescription(const unsigned char *bytes, NSUInteger leng
         default: return nil;
     }
 }
+
+static unsigned long long varintValue(const unsigned char *bytes, NSUInteger length, id *error) {
+    unsigned long long value = 0;
+    NSUInteger i;
+
+    for (i = 0; i < length; ++i) {
+        value += (bytes[i] & 0x7f) << (i * 7);
+
+        if ((bytes[i] & 0x80) == 0) {
+            break;
+        }
+    }
+
+    if (error != nil) {
+        if (i < length - 1) {
+            *error = inspectionError(InspectionErrorTooMuch);
+        }
+        else if (i > length - 1) {
+            *error = inspectionError(InspectionErrorTooLittle);
+        }
+        else {
+            *error = nil;
+        }
+    }
+
+    return value;
+}
+
+static id signedVarintDescription(const unsigned char *bytes, NSUInteger length, enum NumberBase_t numberBase) {
+    id error = nil;
+    unsigned long long us = varintValue(bytes, length, &error);
+
+    if (error) {
+        return error;
+    }
+    else {
+        long long s = (us >> 1) ^ (-(us & 1));
+        FORMAT(@"%lld", @"0x%llX")
+    }
+}
+
+static id unsignedVarintDescription(const unsigned char *bytes, NSUInteger length, enum NumberBase_t numberBase) {
+    id error = nil;
+    unsigned long long s = varintValue(bytes, length, &error);
+
+    if (error) {
+        return error;
+    }
+    else {
+        FORMAT(@"%llu", @"0x%llX")
+    }
+}
 #undef FETCH
 #undef FLIP
 #undef FORMAT
@@ -434,6 +488,8 @@ static NSAttributedString *inspectionSuccess(NSString *s) {
         case eInspectorTypeUnsignedInteger:
         case eInspectorTypeSignedInteger:
         case eInspectorTypeFloatingPoint:
+        case eInspectorTypeSignedVarint:
+        case eInspectorTypeUnsignedVarint:
             if(range.length > 16) {
                 if(outIsError) *outIsError = YES;
                 return inspectionError(InspectionErrorTooMuch);
@@ -503,6 +559,17 @@ static NSAttributedString *inspectionSuccess(NSString *s) {
             if(outIsError) *outIsError = NO;
             return ret;
         }
+
+        case eInspectorTypeSignedVarint:
+        case eInspectorTypeUnsignedVarint:
+            if (length > 8) return inspectionError(InspectionErrorTooMuch);
+            // todo: properly implement up to 128-bit values
+
+            if(inspectorType == eInspectorTypeSignedVarint)
+                return signedVarintDescription(bytes, length, numberBase);
+            else
+                return unsignedVarintDescription(bytes, length, numberBase);
+
         case eInspectorTypeBinary: {
             NSString* ret = @"";
             
@@ -995,7 +1062,9 @@ static BOOL stringRangeIsNullBytes(NSString *string, NSRange range) {
                                  inspector.type == eInspectorTypeUnsignedInteger ||
                                  inspector.type == eInspectorTypeFloatingPoint);
         const bool allowsNumberBase = (inspector.type == eInspectorTypeSignedInteger ||
-                                 inspector.type == eInspectorTypeUnsignedInteger);
+                                 inspector.type == eInspectorTypeUnsignedInteger ||
+                                 inspector.type == eInspectorTypeSignedVarint ||
+                                 inspector.type == eInspectorTypeUnsignedVarint);
         [cell setEnabled:allowsEndianness || allowsNumberBase];
         NSPopUpButtonCell *popUpCell = (NSPopUpButtonCell*)cell;
         HFASSERT(popUpCell.numberOfItems == 6);
